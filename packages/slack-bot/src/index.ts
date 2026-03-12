@@ -40,6 +40,7 @@ const REPO_BRANCH_MODAL_CALLBACK_ID = "repo_branch_preference_modal";
 const BRANCH_INPUT_BLOCK_ID = "branch_input";
 const BRANCH_INPUT_ACTION_ID = "branch_value";
 const REPO_BRANCH_SELECTOR_ACTION_ID = "select_repo_branch_override";
+const CLEAR_REPO_BRANCH_ACTION_ID = "clear_repo_branch_override";
 const MAX_REPO_OPTIONS_IN_APP_HOME = 100;
 const BRANCH_NAME_SPECIAL_CHARS_REGEX = /[\s~^:?*[\\]/;
 const INVALID_BRANCH_ERROR = "Enter a valid Git branch name.";
@@ -808,21 +809,39 @@ async function publishAppHome(env: Env, userId: string): Promise<void> {
     );
 
     if (configuredRepoOverrides.length > 0) {
-      const visibleOverrides = configuredRepoOverrides.slice(0, 8);
-      const lines = visibleOverrides.map(
-        ({ repo, branch }) => `• \`${repo.fullName}\` → *${branch}*`
-      );
-      const remainingCount = configuredRepoOverrides.length - visibleOverrides.length;
-
       blocks.push({
         type: "section",
         text: {
           type: "mrkdwn",
-          text:
-            `*Configured repo overrides*\n${lines.join("\n")}` +
-            (remainingCount > 0 ? `\n• …and ${remainingCount} more` : ""),
+          text: "*Configured repo overrides*",
         },
       });
+
+      for (const { repo, branch } of configuredRepoOverrides) {
+        blocks.push({
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: `\`${repo.fullName}\` → *${branch}*`,
+          },
+          accessory: {
+            type: "button",
+            action_id: CLEAR_REPO_BRANCH_ACTION_ID,
+            text: { type: "plain_text", text: "Delete" },
+            style: "danger",
+            value: repo.id,
+            confirm: {
+              title: { type: "plain_text", text: "Delete override?" },
+              text: {
+                type: "mrkdwn",
+                text: `Remove branch override for *${repo.fullName}*?`,
+              },
+              confirm: { type: "plain_text", text: "Delete" },
+              deny: { type: "plain_text", text: "Cancel" },
+            },
+          },
+        });
+      }
     }
   }
 
@@ -1884,6 +1903,16 @@ async function handleSlackInteraction(
 
       const currentRepoBranch = await getUserRepoBranchPreference(env, userId, repo.id);
       await openRepoBranchPreferenceModal(env, userId, payload.trigger_id, repo, currentRepoBranch);
+      break;
+    }
+
+    case CLEAR_REPO_BRANCH_ACTION_ID: {
+      if (!userId) return;
+      const repoId = action.value ?? action.selected_option?.value;
+      if (!repoId) return;
+
+      await saveUserRepoBranchPreference(env, userId, repoId, undefined);
+      await publishAppHome(env, userId);
       break;
     }
 
