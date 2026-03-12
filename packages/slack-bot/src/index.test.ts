@@ -328,4 +328,48 @@ describe("POST /interactions", () => {
     expect(JSON.stringify(publishCall?.[2])).toContain("acme/app");
     expect(JSON.stringify(publishCall?.[2])).toContain("release/2026-03");
   });
+
+  it("clears repo-specific branch override from App Home", async () => {
+    mockPublishView.mockResolvedValue({ ok: true });
+
+    const payload = {
+      type: "block_actions",
+      user: { id: "U123" },
+      actions: [
+        {
+          action_id: "clear_repo_branch_override",
+          value: "acme/app",
+        },
+      ],
+    };
+
+    const request = new Request("http://localhost/interactions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "x-slack-signature": "v0=test",
+        "x-slack-request-timestamp": `${Math.floor(Date.now() / 1000)}`,
+      },
+      body: new URLSearchParams({ payload: JSON.stringify(payload) }),
+    });
+
+    const env = makeEnv();
+    await (env.SLACK_KV as unknown as { put: (k: string, v: string) => Promise<void> }).put(
+      "user_repo_branch:U123:acme/app",
+      "staging"
+    );
+
+    const ctx = makeCtx();
+    const response = await app.fetch(request, env, ctx);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true });
+    expect(ctx.waitUntil).toHaveBeenCalledOnce();
+
+    await flushWaitUntil(ctx);
+
+    const kvDelete = (env.SLACK_KV as unknown as { delete: ReturnType<typeof vi.fn> }).delete;
+    expect(kvDelete).toHaveBeenCalledWith("user_repo_branch:U123:acme/app");
+    expect(mockPublishView).toHaveBeenCalled();
+  });
 });
