@@ -15,6 +15,7 @@ import {
   getChannelInfo,
   getThreadMessages,
   publishView,
+  openView,
 } from "./utils/slack-client";
 import { resolveUserNames } from "./utils/resolve-users";
 import { createClassifier } from "./classifier";
@@ -34,6 +35,11 @@ import {
 } from "@open-inspect/shared";
 
 const log = createLogger("handler");
+
+const BRANCH_MODAL_CALLBACK_ID = "branch_preference_modal";
+const BRANCH_INPUT_BLOCK_ID = "branch_input";
+const BRANCH_INPUT_ACTION_ID = "branch_value";
+const BRANCH_NAME_REGEX = /^[\w.\-/]+$/;
 
 /**
  * Build authenticated headers for control plane requests.
@@ -64,6 +70,7 @@ async function createSession(
   title: string | undefined,
   model: string,
   reasoningEffort: string | undefined,
+  branch: string | undefined,
   traceId?: string
 ): Promise<{ sessionId: string; status: string } | null> {
   const startTime = Date.now();
@@ -73,6 +80,7 @@ async function createSession(
     repo_name: repo.name,
     model,
     reasoning_effort: reasoningEffort,
+    branch,
   };
   try {
     const headers = await getAuthHeaders(env, traceId);
@@ -85,6 +93,7 @@ async function createSession(
         title: title || `Slack: ${repo.name}`,
         model,
         reasoningEffort,
+        branch,
       }),
     });
 
@@ -300,6 +309,21 @@ function getUserPreferencesKey(userId: string): string {
 }
 
 /**
+ * Normalize a branch preference. Empty strings become undefined.
+ */
+function normalizeBranchPreference(branch: string | undefined): string | undefined {
+  const normalized = branch?.trim();
+  return normalized ? normalized : undefined;
+}
+
+/**
+ * Check whether a branch name is syntactically valid.
+ */
+function isValidBranchName(branch: string): boolean {
+  return BRANCH_NAME_REGEX.test(branch);
+}
+
+/**
  * Type guard to validate UserPreferences shape from KV.
  */
 function isValidUserPreferences(data: unknown): data is UserPreferences {
@@ -307,10 +331,13 @@ function isValidUserPreferences(data: unknown): data is UserPreferences {
     return false;
   }
   const obj = data as Record<string, unknown>;
+  const branchValid =
+    obj.branch === undefined || (typeof obj.branch === "string" && isValidBranchName(obj.branch));
   return (
     typeof obj.userId === "string" &&
     typeof obj.model === "string" &&
-    typeof obj.updatedAt === "number"
+    typeof obj.updatedAt === "number" &&
+    branchValid
   );
 }
 
@@ -343,14 +370,17 @@ async function saveUserPreferences(
   env: Env,
   userId: string,
   model: string,
-  reasoningEffort?: string
+  reasoningEffort?: string,
+  branch?: string
 ): Promise<boolean> {
   try {
     const key = getUserPreferencesKey(userId);
+    const normalizedBranch = normalizeBranchPreference(branch);
     const prefs: UserPreferences = {
       userId,
       model,
       reasoningEffort,
+      branch: normalizedBranch,
       updatedAt: Date.now(),
     };
     // No TTL - preferences persist indefinitely
@@ -384,6 +414,10 @@ async function publishAppHome(env: Env, userId: string): Promise<void> {
     prefs?.reasoningEffort && isValidReasoningEffort(currentModel, prefs.reasoningEffort)
       ? prefs.reasoningEffort
       : getDefaultReasoningEffort(currentModel);
+  const currentBranch =
+    prefs?.branch && isValidBranchName(prefs.branch)
+      ? normalizeBranchPreference(prefs.branch)
+      : undefined;
 
   const reasoningOptions = reasoningConfig
     ? reasoningConfig.efforts.map((effort) => ({
@@ -460,13 +494,55 @@ async function publishAppHome(env: Env, userId: string): Promise<void> {
   }
 
   blocks.push(
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: "*Branch (optional)*\nSet a default branch for new Slack sessions. Leave empty to use each repository default branch.",
+      },
+      accessory: {
+        type: "button",
+        action_id: "open_branch_modal",
+        text: { type: "plain_text", text: currentBranch ? "Edit branch" : "Set branch" },
+        value: "open_branch_modal",
+      },
+    },
+    {
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: currentBranch
+            ? `Branch override: *${currentBranch}*`
+            : "Branch override: *(repo default)*",
+        },
+      ],
+    }
+  );
+
+  if (currentBranch) {
+    blocks.push({
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          action_id: "clear_branch_preference",
+          text: { type: "plain_text", text: "Clear branch override" },
+          style: "danger",
+          value: "clear_branch_preference",
+        },
+      ],
+    });
+  }
+
+  blocks.push(
     { type: "divider" },
     {
       type: "context",
       elements: [
         {
           type: "mrkdwn",
-          text: `Currently using: *${currentModelInfo.label}*${currentEffort ? ` · ${currentEffort}` : ""}`,
+          text: `Currently using: *${currentModelInfo.label}*${currentEffort ? ` · ${currentEffort}` : ""}${currentBranch ? ` · branch:${currentBranch}` : ""}`,
         },
       ],
     }
@@ -480,6 +556,67 @@ async function publishAppHome(env: Env, userId: string): Promise<void> {
   const result = await publishView(env.SLACK_BOT_TOKEN, userId, view);
   if (!result.ok) {
     log.error("slack.app_home", { user_id: userId, outcome: "error", slack_error: result.error });
+  }
+}
+
+/**
+ * Open a modal to set or clear a user's branch preference.
+ */
+async function openBranchPreferenceModal(
+  env: Env,
+  userId: string,
+  triggerId: string,
+  currentBranch?: string
+): Promise<void> {
+  const view = {
+    type: "modal",
+    callback_id: BRANCH_MODAL_CALLBACK_ID,
+    title: {
+      type: "plain_text",
+      text: "Branch Preference",
+    },
+    submit: {
+      type: "plain_text",
+      text: "Save",
+    },
+    close: {
+      type: "plain_text",
+      text: "Cancel",
+    },
+    private_metadata: JSON.stringify({ userId }),
+    blocks: [
+      {
+        type: "input",
+        block_id: BRANCH_INPUT_BLOCK_ID,
+        optional: true,
+        label: {
+          type: "plain_text",
+          text: "Default branch for new Slack sessions",
+        },
+        element: {
+          type: "plain_text_input",
+          action_id: BRANCH_INPUT_ACTION_ID,
+          initial_value: currentBranch || "",
+          placeholder: {
+            type: "plain_text",
+            text: "e.g. main, staging, release/2026-03",
+          },
+        },
+        hint: {
+          type: "plain_text",
+          text: "Leave empty to use each repository's default branch.",
+        },
+      },
+    ],
+  };
+
+  const result = await openView(env.SLACK_BOT_TOKEN, triggerId, view);
+  if (!result.ok) {
+    log.error("slack.open_branch_modal", {
+      user_id: userId,
+      outcome: "error",
+      slack_error: result.error,
+    });
   }
 }
 
@@ -554,14 +691,19 @@ async function startSessionAndSendPrompt(
     userPrefs?.reasoningEffort && isValidReasoningEffort(model, userPrefs.reasoningEffort)
       ? userPrefs.reasoningEffort
       : getDefaultReasoningEffort(model);
+  const branch =
+    userPrefs?.branch && isValidBranchName(userPrefs.branch)
+      ? normalizeBranchPreference(userPrefs.branch)
+      : undefined;
 
-  // Create session via control plane with user's preferred model and reasoning effort
+  // Create session via control plane with user's preferred model, reasoning effort, and branch
   const session = await createSession(
     env,
     repo,
     messageText.slice(0, 100),
     model,
     reasoningEffort,
+    branch,
     traceId
   );
 
@@ -753,16 +895,25 @@ app.post("/interactions", async (c) => {
   }
 
   const payloadStr = new URLSearchParams(body).get("payload") || "{}";
-  const payload = JSON.parse(payloadStr);
+  const payload = JSON.parse(payloadStr) as Parameters<typeof handleSlackInteraction>[0];
 
-  c.executionCtx.waitUntil(handleSlackInteraction(payload, c.env, traceId));
+  const actionId = payload.actions?.[0]?.action_id;
+  const handleInline = payload.type === "view_submission" || actionId === "open_branch_modal";
+
+  if (handleInline) {
+    await handleSlackInteraction(payload, c.env, traceId);
+  } else {
+    c.executionCtx.waitUntil(handleSlackInteraction(payload, c.env, traceId));
+  }
 
   log.info("http.request", {
     trace_id: traceId,
     http_method: "POST",
     http_path: "/interactions",
     http_status: 200,
-    action_id: payload.actions?.[0]?.action_id,
+    interaction_type: payload.type,
+    action_id: actionId,
+    callback_id: payload.view?.callback_id,
     duration_ms: Date.now() - startTime,
   });
 
@@ -1194,17 +1345,58 @@ async function handleRepoSelection(
 async function handleSlackInteraction(
   payload: {
     type: string;
+    trigger_id?: string;
     actions?: Array<{
       action_id: string;
       selected_option?: { value: string };
+      value?: string;
     }>;
     channel?: { id: string };
     message?: { ts: string; thread_ts?: string };
     user?: { id: string };
+    view?: {
+      callback_id?: string;
+      state?: {
+        values?: Record<string, Record<string, { type?: string; value?: string }>>;
+      };
+    };
   },
   env: Env,
   traceId?: string
 ): Promise<void> {
+  const userId = payload.user?.id;
+
+  if (payload.type === "view_submission") {
+    if (payload.view?.callback_id !== BRANCH_MODAL_CALLBACK_ID || !userId) {
+      return;
+    }
+
+    const branchRaw =
+      payload.view.state?.values?.[BRANCH_INPUT_BLOCK_ID]?.[BRANCH_INPUT_ACTION_ID]?.value;
+    const branch = normalizeBranchPreference(branchRaw);
+
+    if (branch && !isValidBranchName(branch)) {
+      log.warn("slack.branch_pref.invalid", {
+        trace_id: traceId,
+        user_id: userId,
+        branch,
+      });
+      await publishAppHome(env, userId);
+      return;
+    }
+
+    const currentPrefs = await getUserPreferences(env, userId);
+    const model = getValidModelOrDefault(currentPrefs?.model ?? env.DEFAULT_MODEL ?? DEFAULT_MODEL);
+    const reasoningEffort =
+      currentPrefs?.reasoningEffort && isValidReasoningEffort(model, currentPrefs.reasoningEffort)
+        ? currentPrefs.reasoningEffort
+        : getDefaultReasoningEffort(model);
+
+    await saveUserPreferences(env, userId, model, reasoningEffort, branch);
+    await publishAppHome(env, userId);
+    return;
+  }
+
   if (payload.type !== "block_actions" || !payload.actions?.length) {
     return;
   }
@@ -1213,7 +1405,6 @@ async function handleSlackInteraction(
   const channel = payload.channel?.id;
   const messageTs = payload.message?.ts;
   const threadTs = payload.message?.thread_ts;
-  const userId = payload.user?.id;
 
   switch (action.action_id) {
     case "select_model": {
@@ -1221,9 +1412,14 @@ async function handleSlackInteraction(
       const selectedModel = action.selected_option?.value;
       // Validate the selected model before saving
       if (selectedModel && userId && isValidModel(selectedModel)) {
+        const currentPrefs = await getUserPreferences(env, userId);
+        const preservedBranch =
+          currentPrefs?.branch && isValidBranchName(currentPrefs.branch)
+            ? normalizeBranchPreference(currentPrefs.branch)
+            : undefined;
         // Reset reasoning effort to new model's default when model changes
         const newDefault = getDefaultReasoningEffort(selectedModel);
-        await saveUserPreferences(env, userId, selectedModel, newDefault);
+        await saveUserPreferences(env, userId, selectedModel, newDefault, preservedBranch);
         await publishAppHome(env, userId);
       }
       break;
@@ -1237,11 +1433,41 @@ async function handleSlackInteraction(
         const currentModel = getValidModelOrDefault(
           currentPrefs?.model ?? env.DEFAULT_MODEL ?? DEFAULT_MODEL
         );
+        const preservedBranch =
+          currentPrefs?.branch && isValidBranchName(currentPrefs.branch)
+            ? normalizeBranchPreference(currentPrefs.branch)
+            : undefined;
         if (isValidReasoningEffort(currentModel, selectedEffort)) {
-          await saveUserPreferences(env, userId, currentModel, selectedEffort);
+          await saveUserPreferences(env, userId, currentModel, selectedEffort, preservedBranch);
           await publishAppHome(env, userId);
         }
       }
+      break;
+    }
+
+    case "open_branch_modal": {
+      if (!userId || !payload.trigger_id) return;
+      const currentPrefs = await getUserPreferences(env, userId);
+      const currentBranch =
+        currentPrefs?.branch && isValidBranchName(currentPrefs.branch)
+          ? normalizeBranchPreference(currentPrefs.branch)
+          : undefined;
+      await openBranchPreferenceModal(env, userId, payload.trigger_id, currentBranch);
+      break;
+    }
+
+    case "clear_branch_preference": {
+      if (!userId) return;
+      const currentPrefs = await getUserPreferences(env, userId);
+      const model = getValidModelOrDefault(
+        currentPrefs?.model ?? env.DEFAULT_MODEL ?? DEFAULT_MODEL
+      );
+      const reasoningEffort =
+        currentPrefs?.reasoningEffort && isValidReasoningEffort(model, currentPrefs.reasoningEffort)
+          ? currentPrefs.reasoningEffort
+          : getDefaultReasoningEffort(model);
+      await saveUserPreferences(env, userId, model, reasoningEffort, undefined);
+      await publishAppHome(env, userId);
       break;
     }
 
