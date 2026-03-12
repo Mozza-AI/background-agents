@@ -730,6 +730,9 @@ async function publishAppHome(env: Env, userId: string): Promise<void> {
 
   blocks.push(
     {
+      type: "divider",
+    },
+    {
       type: "section",
       text: {
         type: "mrkdwn",
@@ -776,9 +779,6 @@ async function publishAppHome(env: Env, userId: string): Promise<void> {
       .filter((entry): entry is { repo: RepoConfig; branch: string } => Boolean(entry.branch));
 
     blocks.push(
-      {
-        type: "divider",
-      },
       {
         type: "section",
         text: {
@@ -846,18 +846,15 @@ async function publishAppHome(env: Env, userId: string): Promise<void> {
     }
   }
 
-  blocks.push(
-    { type: "divider" },
-    {
-      type: "context",
-      elements: [
-        {
-          type: "mrkdwn",
-          text: `Currently using: *${currentModelInfo.label}*${currentEffort ? ` · ${currentEffort}` : ""}${currentBranch ? ` · branch:${currentBranch}` : ""}`,
-        },
-      ],
-    }
-  );
+  blocks.push({
+    type: "context",
+    elements: [
+      {
+        type: "mrkdwn",
+        text: `Currently using: *${currentModelInfo.label}*${currentEffort ? ` · ${currentEffort}` : ""}${currentBranch ? ` · branch:${currentBranch}` : ""}`,
+      },
+    ],
+  });
 
   const view = {
     type: "home",
