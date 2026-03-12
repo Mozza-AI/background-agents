@@ -897,9 +897,9 @@ app.post("/interactions", async (c) => {
   const payload = JSON.parse(payloadStr) as Parameters<typeof handleSlackInteraction>[0];
 
   const actionId = payload.actions?.[0]?.action_id;
-  const handleInline = payload.type === "view_submission" || actionId === "open_branch_modal";
+  const shouldOpenModalInline = actionId === "open_branch_modal";
 
-  if (handleInline) {
+  if (shouldOpenModalInline) {
     await handleSlackInteraction(payload, c.env, traceId);
   } else {
     c.executionCtx.waitUntil(handleSlackInteraction(payload, c.env, traceId));
