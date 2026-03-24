@@ -331,6 +331,52 @@ describe("POST /interactions", () => {
     expect(JSON.stringify(publishCall?.[2])).toContain("release/2026-03");
   });
 
+  it("ignores repo-specific branch submission for unknown repo", async () => {
+    mockPublishView.mockResolvedValue({ ok: true });
+
+    const payload = {
+      type: "view_submission",
+      user: { id: "U123" },
+      view: {
+        callback_id: "repo_branch_preference_modal",
+        private_metadata: JSON.stringify({ userId: "U123", repoId: "acme/unknown" }),
+        state: {
+          values: {
+            branch_input: {
+              branch_value: {
+                type: "plain_text_input",
+                value: "release/2026-03",
+              },
+            },
+          },
+        },
+      },
+    };
+
+    const request = new Request("http://localhost/interactions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "x-slack-signature": "v0=test",
+        "x-slack-request-timestamp": `${Math.floor(Date.now() / 1000)}`,
+      },
+      body: new URLSearchParams({ payload: JSON.stringify(payload) }),
+    });
+
+    const env = makeEnv();
+    const ctx = makeCtx();
+    const response = await app.fetch(request, env, ctx);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ response_action: "clear" });
+    expect(ctx.waitUntil).toHaveBeenCalledOnce();
+
+    await flushWaitUntil(ctx);
+
+    const kvPut = (env.SLACK_KV as unknown as { put: ReturnType<typeof vi.fn> }).put;
+    expect(kvPut).not.toHaveBeenCalledWith("user_repo_branch:U123:acme/unknown", "release/2026-03");
+  });
+
   it("clears repo-specific branch override from App Home", async () => {
     mockPublishView.mockResolvedValue({ ok: true });
 

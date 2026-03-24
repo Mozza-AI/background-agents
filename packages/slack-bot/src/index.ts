@@ -1885,6 +1885,17 @@ async function handleSlackInteraction(
       return;
     }
 
+    const availableRepos = await getAvailableRepos(env, traceId);
+    if (!availableRepos.some((repo) => repo.id === repoId)) {
+      log.warn("slack.repo_branch_pref.unknown_repo", {
+        trace_id: traceId,
+        user_id: userId,
+        repo_id: repoId,
+      });
+      await publishAppHome(env, userId);
+      return;
+    }
+
     await saveUserRepoBranchPreference(env, userId, repoId, branch);
     await publishAppHome(env, userId);
     return;
