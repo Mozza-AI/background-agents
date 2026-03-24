@@ -125,7 +125,7 @@ describe("POST /interactions", () => {
     mockOpenView.mockResolvedValue({ ok: true });
   });
 
-  it.each(["foo..bar", "release/", "-bad", "foo/.bar", "foo.lock"])(
+  it.each(["foo..bar", "release/", "-bad", "@", "foo/.bar", "foo.lock"])(
     "rejects invalid branch submission %s",
     async (branch) => {
       const payload = {

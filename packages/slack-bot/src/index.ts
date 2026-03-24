@@ -486,6 +486,10 @@ function getBranchValidationError(branch: string): string | undefined {
     return INVALID_BRANCH_ERROR;
   }
 
+  if (branch === "@") {
+    return INVALID_BRANCH_ERROR;
+  }
+
   if (
     branch.startsWith("/") ||
     branch.endsWith("/") ||
