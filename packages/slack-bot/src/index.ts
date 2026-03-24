@@ -6,7 +6,14 @@
  */
 
 import { Hono } from "hono";
-import type { Env, RepoConfig, CallbackContext, ThreadSession, UserPreferences } from "./types";
+import type {
+  Env,
+  RepoConfig,
+  CallbackContext,
+  ThreadSession,
+  UserPreferences,
+  SlackInteractionPayload,
+} from "./types";
 import {
   verifySlackSignature,
   postMessage,
@@ -45,28 +52,6 @@ const CLEAR_REPO_BRANCH_ACTION_ID = "clear_repo_branch_override";
 const MAX_REPO_SUGGESTION_OPTIONS = 100;
 const BRANCH_NAME_SPECIAL_CHARS_REGEX = /[\s~^:?*[\\]/;
 const INVALID_BRANCH_ERROR = "Enter a valid Git branch name.";
-
-type SlackInteractionPayload = {
-  type: string;
-  action_id?: string;
-  value?: string;
-  trigger_id?: string;
-  actions?: Array<{
-    action_id: string;
-    selected_option?: { value: string };
-    value?: string;
-  }>;
-  channel?: { id: string };
-  message?: { ts: string; thread_ts?: string };
-  user?: { id: string };
-  view?: {
-    callback_id?: string;
-    private_metadata?: string;
-    state?: {
-      values?: Record<string, Record<string, { type?: string; value?: string }>>;
-    };
-  };
-};
 
 /**
  * Build authenticated headers for control plane requests.
@@ -521,14 +506,18 @@ function isBranchModalCallbackId(callbackId: string | undefined): boolean {
   return callbackId === BRANCH_MODAL_CALLBACK_ID || callbackId === REPO_BRANCH_MODAL_CALLBACK_ID;
 }
 
+function getSubmittedBranch(payload: SlackInteractionPayload): string | undefined {
+  const branchRaw =
+    payload.view?.state?.values?.[BRANCH_INPUT_BLOCK_ID]?.[BRANCH_INPUT_ACTION_ID]?.value;
+  return normalizeBranchPreference(branchRaw);
+}
+
 function getBranchSubmissionValidationError(payload: SlackInteractionPayload): string | undefined {
   if (payload.type !== "view_submission" || !isBranchModalCallbackId(payload.view?.callback_id)) {
     return undefined;
   }
 
-  const branchRaw =
-    payload.view?.state?.values?.[BRANCH_INPUT_BLOCK_ID]?.[BRANCH_INPUT_ACTION_ID]?.value;
-  const branch = normalizeBranchPreference(branchRaw);
+  const branch = getSubmittedBranch(payload);
   if (!branch) {
     return undefined;
   }
@@ -1336,16 +1325,14 @@ app.post("/interactions", async (c) => {
     return c.json({ options: [] });
   }
 
+  const submittedBranch = getSubmittedBranch(payload);
   const branchValidationError = getBranchSubmissionValidationError(payload);
 
   if (branchValidationError) {
     log.warn("slack.branch_pref.invalid", {
       trace_id: traceId,
       user_id: payload.user?.id,
-      branch:
-        normalizeBranchPreference(
-          payload.view?.state?.values?.[BRANCH_INPUT_BLOCK_ID]?.[BRANCH_INPUT_ACTION_ID]?.value
-        ) ?? "",
+      branch: submittedBranch ?? "",
     });
     log.info("http.request", {
       trace_id: traceId,
