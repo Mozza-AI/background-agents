@@ -1387,7 +1387,7 @@ app.post("/interactions", async (c) => {
     duration_ms: Date.now() - startTime,
   });
 
-  if (isViewSubmission) {
+  if (isViewSubmission && isBranchModalCallbackId(payload.view?.callback_id)) {
     return c.json({ response_action: "clear" });
   }
 
