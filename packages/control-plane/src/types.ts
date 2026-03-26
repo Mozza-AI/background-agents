@@ -43,7 +43,7 @@ export interface Env {
   SLACK_BOT?: Fetcher; // Optional - only if slack-bot is deployed
   LINEAR_BOT?: Fetcher; // Optional - only if linear-bot is deployed
 
-  // Durable Objects (optional)
+  // Durable Objects
   SCHEDULER?: DurableObjectNamespace; // SchedulerDO for automation engine
 
   // D1 database
@@ -63,6 +63,10 @@ export interface Env {
   GITHUB_APP_ID?: string;
   GITHUB_APP_PRIVATE_KEY?: string;
   GITHUB_APP_INSTALLATION_ID?: string;
+
+  // GitLab secrets (for git operations and API access when SCM_PROVIDER=gitlab)
+  GITLAB_ACCESS_TOKEN?: string;
+  GITLAB_NAMESPACE?: string; // Group namespace to scope repository listing
 
   // Variables
   DEPLOYMENT_NAME: string;
