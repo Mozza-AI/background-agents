@@ -196,8 +196,8 @@ send the request again and name the repository, environment, or that no reposito
 Administrators can map keywords to repositories, environments, or **No repository** so common
 requests route instantly. Configure them under **Settings → Integrations → Slack → Routing rules**.
 Each rule pairs a keyword with a target. **No repository** starts an empty sandbox without cloning
-code. For example, map `notion` to **No repository** to handle Notion tasks without a checkout. MCP
-servers for these sessions must be available to sessions without a repository.
+code. Use this target for tasks that do not need repository context. MCP servers for these sessions
+must be available to sessions without a repository.
 
 For example, with `frontend → acme/web-app` and `api → acme/backend`:
 
